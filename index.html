@@ -1,0 +1,493 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>匿名聊天室</title>
+<!-- 引入 MQTT.js 用于实时通信 -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --primary: #07c160; /* 微信绿 */
+    --bg: #ededed;
+    --text: #333;
+    --bubble-me: #95ec69;
+    --bubble-other: #fff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: -apple-system, 'PingFang SC', sans-serif; }
+  body { background: var(--bg); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* 登录设置界面 */
+  #login-view {
+    position: fixed; inset: 0; background: #fff; z-index: 100;
+    display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 20px;
+  }
+  .avatar-upload {
+    width: 100px; height: 100px; border-radius: 50%; background: #eee;
+    display: flex; justify-content: center; align-items: center; overflow: hidden;
+    cursor: pointer; margin-bottom: 20px; border: 2px solid #ddd; position: relative;
+  }
+  .avatar-upload img { width: 100%; height: 100%; object-fit: cover; display: none; }
+  .avatar-upload span { font-size: 30px; color: #aaa; }
+  .input-group { width: 100%; max-width: 300px; margin-bottom: 15px; }
+  .input-group input {
+    width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; outline: none;
+  }
+  .btn {
+    width: 100%; max-width: 300px; padding: 12px; background: var(--primary); color: #fff;
+    border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer;
+  }
+  .lang-switch {
+    position: absolute; top: 20px; right: 20px; background: #f0f0f0; border: none; padding: 8px 12px;
+    border-radius: 20px; font-size: 14px; cursor: pointer; color: #666;
+  }
+
+  /* 聊天主界面 */
+  #chat-view { display: none; flex-direction: column; height: 100%; width: 100%; max-width: 600px; margin: 0 auto; background: var(--bg); box-shadow: 0 0 20px rgba(0,0,0,0.1); }
+  
+  /* 顶部导航 */
+  .header { background: #f7f7f7; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd; position: relative; }
+  .header-title { font-weight: bold; font-size: 18px; display: flex; align-items: center; gap: 10px; }
+  #online-badge {
+    font-size: 12px; background: #e6f7eb; color: var(--primary); padding: 2px 8px; border-radius: 10px;
+    font-weight: normal; cursor: pointer; border: 1px solid var(--primary);
+  }
+  .my-info { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #666; }
+  .my-info img { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
+
+  /* 在线列表弹窗 */
+  #online-list-popup {
+    position: absolute; top: 50px; left: 15px; background: #fff; border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.15); width: 200px; max-height: 300px;
+    overflow-y: auto; display: none; z-index: 50; padding: 10px 0;
+  }
+  #online-list-popup.show { display: block; }
+  .online-user-item {
+    display: flex; align-items: center; gap: 10px; padding: 8px 15px; font-size: 14px;
+    cursor: pointer; transition: background 0.2s;
+  }
+  .online-user-item:hover { background: #f0f0f0; }
+  .online-user-item img { width: 25px; height: 25px; border-radius: 50%; object-fit: cover; }
+  .online-user-item span { color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 消息列表 */
+  #messages { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 15px; }
+  .msg-row { display: flex; align-items: flex-start; gap: 10px; }
+  .msg-row.me { flex-direction: row-reverse; }
+  .msg-avatar { width: 40px; height: 40px; border-radius: 5px; object-fit: cover; background: #ccc; cursor: pointer; }
+  .msg-content { max-width: 70%; display: flex; flex-direction: column; }
+  .msg-row.me .msg-content { align-items: flex-end; }
+  .msg-name { font-size: 12px; color: #999; margin-bottom: 4px; }
+  .msg-bubble {
+    padding: 10px 14px; border-radius: 8px; font-size: 16px; line-height: 1.4; word-break: break-all;
+    background: var(--bubble-other); color: var(--text); position: relative;
+  }
+  .msg-row.me .msg-bubble { background: var(--bubble-me); }
+
+  /* 游戏卡片 */
+  .game-card {
+    background: #fff; border-radius: 8px; padding: 15px; text-align: center; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 250px;
+  }
+  .game-card h4 { color: #ff5722; margin-bottom: 10px; }
+  .game-card button { margin: 5px; padding: 8px 12px; border: none; border-radius: 5px; background: #eee; cursor: pointer; font-size: 16px; }
+  .game-card button:hover { background: #ddd; }
+
+  /* 底部输入区 */
+  .footer { background: #f7f7f7; padding: 10px 15px; border-top: 1px solid #ddd; }
+  .chat-tools { display: flex; gap: 10px; margin-bottom: 8px; font-size: 13px; color: #666; overflow-x: auto; }
+  .chat-tools span { cursor: pointer; padding: 4px 10px; border-radius: 10px; background: #e0e0e0; white-space: nowrap; }
+  .chat-tools span.active { background: var(--primary); color: #fff; }
+  
+  .input-area { display: flex; gap: 10px; }
+  .input-area input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 8px; outline: none; }
+  .send-btn { padding: 0 20px; background: var(--primary); color: #fff; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; }
+</style>
+</head>
+<body>
+
+  <!-- 登录页 -->
+  <div id="login-view">
+    <button class="lang-switch" onclick="toggleLang()">English</button>
+    <div class="avatar-upload" onclick="document.getElementById('file-input').click()">
+      <span id="avatar-icon">+</span>
+      <img id="avatar-preview" src="" alt="avatar">
+    </div>
+    <input type="file" id="file-input" accept="image/*" style="display: none;" onchange="handleAvatar(event)">
+    
+    <div class="input-group">
+      <input type="text" id="name-input" placeholder="请输入你的昵称" maxlength="10">
+    </div>
+    <button class="btn" onclick="enterChat()" id="enter-btn">进入聊天室</button>
+  </div>
+
+  <!-- 聊天页 -->
+  <div id="chat-view">
+    <div class="header">
+      <div class="header-title">
+        <span id="chat-title">世界聊天室</span>
+        <span id="online-badge" onclick="toggleOnlineList(event)">在线: 0</span>
+      </div>
+      <div class="my-info">
+        <span id="my-name-display"></span>
+        <img id="my-avatar-display" src="" alt="">
+      </div>
+      
+      <!-- 在线列表 -->
+      <div id="online-list-popup"></div>
+    </div>
+
+    <div id="messages"></div>
+
+    <div class="footer">
+      <div class="chat-tools">
+        <span class="active" id="tool-global" onclick="setChatMode('global')">🌍 世界频道</span>
+        <span id="tool-private" onclick="setChatMode('private')">🔒 私聊模式 (未选择)</span>
+        <span id="tool-game" onclick="matchGame()">🎮 匹配小游戏</span>
+      </div>
+      <div class="input-area">
+        <input type="text" id="msg-input" placeholder="说点什么..." onkeydown="if(event.key==='Enter') sendMsg()">
+        <button class="send-btn" onclick="sendMsg()" id="send-btn">发送</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+  // ================= 多语言配置 =================
+  const i18n = {
+    zh: {
+      title: "匿名聊天室", namePlaceholder: "请输入你的昵称", enterBtn: "进入聊天室",
+      chatTitle: "世界聊天室", global: "🌍 世界频道", private: "🔒 私聊模式", game: "🎮 匹配小游戏",
+      msgPlaceholder: "说点什么...", send: "发送", noName: "请输入昵称！", noAvatar: "请上传头像！",
+      noPrivate: "请点击左侧头像选择私聊对象！", online: "在线",
+      rock: "石头 ✊", scissors: "剪刀 ✌️", paper: "布 ✋", gameTitle: "猜拳对战"
+    },
+    en: {
+      title: "Anonymous Chat", namePlaceholder: "Enter your name", enterBtn: "Enter Chat",
+      chatTitle: "Global Chat", global: "🌍 Global", private: "🔒 Private", game: "🎮 Game",
+      msgPlaceholder: "Type a message...", send: "Send", noName: "Please enter a name!", noAvatar: "Please upload an avatar!",
+      noPrivate: "Click an avatar to select a private target!", online: "Online",
+      rock: "Rock ✊", scissors: "Scissors ✌️", paper: "Paper ✋", gameTitle: "R.P.S."
+    }
+  };
+  let currentLang = 'zh';
+
+  function toggleLang() {
+    currentLang = currentLang === 'zh' ? 'en' : 'zh';
+    updateUI();
+  }
+
+  function updateUI() {
+    const d = i18n[currentLang];
+    document.title = d.title;
+    document.querySelector('.lang-switch').innerText = currentLang === 'zh' ? 'English' : '中文';
+    document.getElementById('name-input').placeholder = d.namePlaceholder;
+    document.getElementById('enter-btn').innerText = d.enterBtn;
+    document.getElementById('chat-title').innerText = d.chatTitle;
+    document.getElementById('tool-global').innerText = d.global;
+    document.getElementById('tool-private').innerText = d.private + (privateTarget ? ` (${privateTarget.name})` : '');
+    document.getElementById('tool-game').innerText = d.game;
+    document.getElementById('msg-input').placeholder = d.msgPlaceholder;
+    document.getElementById('send-btn').innerText = d.send;
+    updateOnlineUI();
+  }
+
+  // ================= 用户设置 =================
+  let myAvatarBase64 = '';
+  let myName = '';
+  let myId = Math.random().toString(36).substring(2, 8); // 生成唯一ID
+  let privateTarget = null;
+  let chatMode = 'global';
+
+  function handleAvatar(e) {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        myAvatarBase64 = evt.target.result;
+        document.getElementById('avatar-icon').style.display = 'none';
+        const img = document.getElementById('avatar-preview');
+        img.src = myAvatarBase64;
+        img.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  // ================= MQTT 实时通信核心 =================
+  let client = null;
+  const TOPIC = 'github_pages_chat_room_999';
+  const PRESENCE_TOPIC = TOPIC + '/presence'; // 专门用来处理在线的频道
+  
+  // 维护在线用户列表 (Key: id, Value: {name, lastSeen})
+  const onlineUsers = new Map();
+  let heartbeatTimer = null;
+  let cleanUpTimer = null;
+
+  function enterChat() {
+    const d = i18n[currentLang];
+    myName = document.getElementById('name-input').value.trim();
+    if (!myName) return alert(d.noName);
+    if (!myAvatarBase64) return alert(d.noAvatar);
+
+    document.getElementById('login-view').style.display = 'none';
+    document.getElementById('chat-view').style.display = 'flex';
+    document.getElementById('my-name-display').innerText = myName;
+    document.getElementById('my-avatar-display').src = myAvatarBase64;
+
+    const host = 'wss://broker.emqx.io:8084/mqtt';
+    client = mqtt.connect(host, { clientId: 'user_' + myId });
+
+    client.on('connect', () => {
+      client.subscribe(TOPIC);
+      client.subscribe(PRESENCE_TOPIC);
+
+      // 开始发送心跳包
+      sendHeartbeat();
+      heartbeatTimer = setInterval(sendHeartbeat, 5000); // 每5秒喊一次
+      
+      // 清理超时未响应的用户（超过12秒没心跳视为离线）
+      cleanUpTimer = setInterval(() => {
+        let changed = false;
+        const now = Date.now();
+        onlineUsers.forEach((user, id) => {
+          if (now - user.lastSeen > 12000) {
+            onlineUsers.delete(id);
+            changed = true;
+          }
+        });
+        if (changed) updateOnlineUI();
+      }, 5000);
+    });
+
+    client.on('message', (topic, payload) => {
+      try {
+        const data = JSON.parse(payload.toString());
+
+        // 处理在线心跳和下线消息
+        if (topic === PRESENCE_TOPIC) {
+          handlePresenceMessage(data);
+          return;
+        }
+
+        // 处理聊天消息
+        if (data.senderId === myId) return; // 过滤自己
+
+        if (data.isPrivate) {
+          if (data.targetId !== myId && data.senderId !== myId) return;
+        }
+
+        if (data.type === 'game') {
+          handleGameMessage(data);
+        } else {
+          addMessage(data, false);
+        }
+      } catch(e) {}
+    });
+  }
+
+  // ================= 在线状态核心逻辑 =================
+  function sendHeartbeat() {
+    if (!client || !client.connected) return;
+    
+    // 广播我在线
+    const presenceData = {
+      type: 'heartbeat',
+      senderId: myId,
+      senderName: myName,
+      senderAvatar: myAvatarBase64
+    };
+    client.publish(PRESENCE_TOPIC, JSON.stringify(presenceData));
+    
+    // 自己也记录一下自己
+    onlineUsers.set(myId, { name: myName, avatar: myAvatarBase64, lastSeen: Date.now() });
+    updateOnlineUI();
+  }
+
+  function handlePresenceMessage(data) {
+    if (data.senderId === myId) return; // 忽略自己的心跳
+
+    if (data.type === 'heartbeat') {
+      // 更新或添加用户
+      onlineUsers.set(data.senderId, {
+        name: data.senderName,
+        avatar: data.senderAvatar,
+        lastSeen: Date.now()
+      });
+      updateOnlineUI();
+    } else if (data.type === 'offline') {
+      // 某人主动离开
+      if (onlineUsers.has(data.senderId)) {
+        onlineUsers.delete(data.senderId);
+        updateOnlineUI();
+      }
+    }
+  }
+
+  // 页面关闭或刷新时，通知所有人我下线了
+  window.addEventListener('beforeunload', () => {
+    if (client && client.connected) {
+      client.publish(PRESENCE_TOPIC, JSON.stringify({
+        type: 'offline',
+        senderId: myId
+      }));
+    }
+  });
+
+  // 更新 UI 显示
+  function updateOnlineUI() {
+    const count = onlineUsers.size;
+    const d = i18n[currentLang];
+    document.getElementById('online-badge').innerText = `${d.online}: ${count}`;
+
+    const popup = document.getElementById('online-list-popup');
+    popup.innerHTML = ''; // 清空
+
+    if (count === 0) {
+      popup.innerHTML = '<div style="padding:10px 15px;color:#999;font-size:12px;">暂无人在线</div>';
+      return;
+    }
+
+    // 生成列表
+    onlineUsers.forEach((user, id) => {
+      const item = document.createElement('div');
+      item.className = 'online-user-item';
+      
+      // 点击在线列表里的人也能私聊
+      item.onclick = (e) => {
+        e.stopPropagation();
+        if (id !== myId) {
+          setPrivate(id, user.name);
+          toggleOnlineList(); // 选完关闭列表
+        }
+      };
+
+      item.innerHTML = `
+        <img src="${user.avatar}">
+        <span>${user.name} ${id === myId ? '(我)' : ''}</span>
+      `;
+      popup.appendChild(item);
+    });
+  }
+
+  function toggleOnlineList(e) {
+    if (e) e.stopPropagation();
+    document.getElementById('online-list-popup').classList.toggle('show');
+  }
+
+  // 点击页面其他地方关闭列表
+  document.addEventListener('click', () => {
+    document.getElementById('online-list-popup').classList.remove('show');
+  });
+
+
+  // ================= 发送与接收消息 =================
+  function sendMsg() {
+    const input = document.getElementById('msg-input');
+    const text = input.value.trim();
+    if (!text) return;
+    const d = i18n[currentLang];
+
+    if (chatMode === 'private' && !privateTarget) {
+      alert(d.noPrivate);
+      return;
+    }
+
+    const msgData = {
+      type: 'text',
+      text: text,
+      senderId: myId,
+      senderName: myName,
+      senderAvatar: myAvatarBase64,
+      isPrivate: chatMode === 'private',
+      targetId: chatMode === 'private' ? privateTarget.id : null,
+      targetName: chatMode === 'private' ? privateTarget.name : null
+    };
+
+    client.publish(TOPIC, JSON.stringify(msgData));
+    addMessage(msgData, true);
+    input.value = '';
+  }
+
+  function addMessage(data, isMe) {
+    const msgContainer = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.className = `msg-row ${isMe ? 'me' : ''}`;
+    
+    const avatarClick = isMe ? '' : `onclick="setPrivate('${data.senderId}', '${data.senderName}')"`;
+    let nameHtml = isMe ? '' : `<div class="msg-name">${data.senderName} ${data.isPrivate ? '<span style="color:#ff9800">[私聊]</span>' : ''}</div>`;
+
+    div.innerHTML = `
+      <img class="msg-avatar" src="${data.senderAvatar}" ${avatarClick}>
+      <div class="msg-content">
+        ${nameHtml}
+        <div class="msg-bubble">${data.text}</div>
+      </div>
+    `;
+    msgContainer.appendChild(div);
+    msgContainer.scrollTop = msgContainer.scrollHeight;
+  }
+
+  function addSystemMsg(text) {
+    const msgContainer = document.getElementById('messages');
+    const div = document.createElement('div');
+    div.style.textAlign = 'center'; div.style.fontSize = '12px'; div.style.color = '#999'; div.style.margin = '5px 0';
+    div.innerText = text;
+    msgContainer.appendChild(div);
+    msgContainer.scrollTop = msgContainer.scrollHeight;
+  }
+
+  // ================= 私聊与游戏 =================
+  function setPrivate(id, name) {
+    privateTarget = { id, name };
+    setChatMode('private');
+  }
+
+  function setChatMode(mode) {
+    chatMode = mode;
+    document.getElementById('tool-global').classList.toggle('active', mode === 'global');
+    document.getElementById('tool-private').classList.toggle('active', mode === 'private');
+    updateUI();
+  }
+
+  function matchGame() {
+    const gameData = { type: 'game', action: 'start', senderId: myId, senderName: myName, senderAvatar: myAvatarBase64 };
+    client.publish(TOPIC, JSON.stringify(gameData));
+    showGameCard(myName);
+  }
+
+  function showGameCard(name) {
+    const msgContainer = document.getElementById('messages');
+    const d = i18n[currentLang];
+    const div = document.createElement('div');
+    div.className = 'msg-row';
+    div.innerHTML = `
+      <div class="msg-content" style="max-width: 100%; width: 100%; align-items: center;">
+        <div class="game-card">
+          <h4>${d.gameTitle} - ${name}</h4>
+          <div>
+            <button onclick="playGame('rock')">${d.rock}</button>
+            <button onclick="playGame('scissors')">${d.scissors}</button>
+            <button onclick="playGame('paper')">${d.paper}</button>
+          </div>
+        </div>
+      </div>
+    `;
+    msgContainer.appendChild(div);
+    msgContainer.scrollTop = msgContainer.scrollHeight;
+  }
+
+  function playGame(choice) {
+    const gameData = { type: 'game', action: 'result', choice: choice, senderId: myId, senderName: myName };
+    client.publish(TOPIC, JSON.stringify(gameData));
+    addSystemMsg(`你出了: ${choice}`);
+  }
+
+  function handleGameMessage(data) {
+    if (data.action === 'result') {
+      addSystemMsg(`${data.senderName} 参与了游戏 (出了 ${data.choice})`);
+    }
+  }
+</script>
+</body>
+</html>
